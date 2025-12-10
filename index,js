@@ -1,0 +1,225 @@
+const express = require('express');
+const crypto = require('crypto');
+const fetch = require('node-fetch');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 配置
+const CONFIG = {
+  BINANCE_API_KEY: process.env.BINANCE_API_KEY || '',
+  BINANCE_API_SECRET: process.env.BINANCE_API_SECRET || '',
+  BINANCE_SPOT_URL: 'https://api.binance.com',
+  BINANCE_FUTURES_URL: 'https://fapi.binance.com',
+};
+
+// CORS中间件
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// 主页
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>币安API代理</title>
+        <style>
+          body { font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
+          .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          h1 { color: #f0b90b; }
+          .status { background: #28a745; color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; }
+          code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; }
+          .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #f0b90b; border-radius: 4px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🚀 币安API代理服务</h1>
+          <p><span class="status">✓ 运行中</span></p >
+          
+          <h2>📡 可用端点</h2>
+          
+          <div class="endpoint">
+            <strong>1. 测试连接</strong><br>
+            <code>GET /test</code>
+          </div>
+          
+          <div class="endpoint">
+            <strong>2. 获取K线数据</strong><br>
+            <code>GET /klines?symbol=BTCUSDT&interval=15m&limit=50</code>
+          </div>
+          
+          <div class="endpoint">
+            <strong>3. 获取账户信息</strong><br>
+            <code>GET /account</code>
+          </div>
+          
+          <div class="endpoint">
+            <strong>4. 获取持仓信息</strong><br>
+            <code>GET /positions</code>
+          </div>
+          
+          <p>部署时间: ${new Date().toISOString()}</p >
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// 测试端点
+app.get('/test', (req, res) => {
+  res.json({
+    status: 'success',
+    message: '币安API代理运行正常!',
+    timestamp: new Date().toISOString(),
+    endpoints: ['/test', '/klines', '/account', '/positions']
+  });
+});
+
+// 获取K线数据
+app.get('/klines', async (req, res) => {
+  try {
+    const symbol = req.query.symbol || 'BTCUSDT';
+    const interval = req.query.interval || '15m';
+    const limit = req.query.limit || '50';
+    
+    const url = `${CONFIG.BINANCE_SPOT_URL}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    
+    console.log('请求币安URL:', url);
+    
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      }
+    });
+    
+    const data = await response.json();
+    
+    console.log('币安响应状态:', response.status);
+    
+    if (!Array.isArray(data)) {
+      console.error('币安返回数据不是数组:', data);
+      throw new Error('币安返回数据格式错误: ' + JSON.stringify(data));
+    }
+    
+    const formatted = data.map(candle => ({
+      openTime: candle[0],
+      open: candle[1],
+      high: candle[2],
+      low: candle[3],
+      close: candle[4],
+      volume: candle[5],
+      closeTime: candle[6],
+      quoteVolume: candle[7],
+      trades: candle[8]
+    }));
+    
+    res.json({
+      success: true,
+      symbol: symbol,
+      interval: interval,
+      count: formatted.length,
+      data: formatted
+    });
+    
+  } catch (error) {
+    console.error('获取K线数据失败:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 获取账户信息
+app.get('/account', async (req, res) => {
+  try {
+    if (!CONFIG.BINANCE_API_KEY) {
+      return res.status(401).json({
+        error: '请先配置币安API密钥'
+      });
+    }
+    
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    const signature = crypto
+      .createHmac('sha256', CONFIG.BINANCE_API_SECRET)
+      .update(queryString)
+      .digest('hex');
+    
+    const url = `${CONFIG.BINANCE_FUTURES_URL}/fapi/v2/account?${queryString}&signature=${signature}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'X-MBX-APIKEY': CONFIG.BINANCE_API_KEY
+      }
+    });
+    
+    const data = await response.json();
+    
+    res.json({
+      success: true,
+      data: data
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 获取持仓信息
+app.get('/positions', async (req, res) => {
+  try {
+    if (!CONFIG.BINANCE_API_KEY) {
+      return res.status(401).json({
+        error: '请先配置币安API密钥'
+        });
+    }
+    
+    const timestamp = Date.now();
+    const queryString = `timestamp=${timestamp}`;
+    const signature = crypto
+      .createHmac('sha256', CONFIG.BINANCE_API_SECRET)
+      .update(queryString)
+      .digest('hex');
+    
+    const url = `${CONFIG.BINANCE_FUTURES_URL}/fapi/v2/positionRisk?${queryString}&signature=${signature}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'X-MBX-APIKEY': CONFIG.BINANCE_API_KEY
+      }
+    });
+    
+    const data = await response.json();
+    const activePositions = data.filter(pos => parseFloat(pos.positionAmt) !== 0);
+    
+    res.json({
+      success: true,
+      count: activePositions.length,
+      data: activePositions
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`币安API代理运行在端口 ${PORT}`);
+});
